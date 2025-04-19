@@ -1,0 +1,368 @@
+# ===================================================================
+#
+#   Script: Main
+#
+# ===================================================================
+#
+#   Entry point of your game.
+#
+# ===================================================================
+
+
+class Main
+    ###*
+    * Controls the boot-process of the game.
+    *
+    * @module gs
+    * @class Main
+    * @memberof gs
+    * @constructor
+    ###
+    constructor: ->
+        window.$ = jQuery.noConflict()
+
+        @languagesLoaded = no
+        @frameCallback = null
+
+    ###*
+    * Updates the current frame.
+    *
+    * @method updateFrame
+    ###
+    updateFrame: ->
+        if $PARAMS.showDebugInfo
+            window.startTime = if window.performance? then window.performance.now() else Date.now()
+
+        SceneManager.update()
+        Graphics.frameCount++
+
+        if $PARAMS.showDebugInfo
+            if not @debugSprite? then @debugSprite = new Sprite_Debug()
+
+            window.endTime = if window.performance? then window.performance.now() else Date.now()
+            if Graphics.frameCount % 30 == 0
+                @debugSprite.frameTime = (endTime - startTime)
+                @debugSprite.redraw()
+
+    ###*
+    * Loads game data.
+    *
+    * @method loadData
+    ###
+    loadData: ->
+        RecordManager.load()
+        DataManager.getDocumentsByType("global_variables")
+        DataManager.getDocumentsByType("language_profile")
+        DataManager.getDocumentsByType("vn.chapter")
+
+    ###*
+    * Loads system data.
+    *
+    * @method loadSystemData
+    ###
+    loadSystemData: ->
+        DataManager.getDocument("RESOURCES")
+        DataManager.getDocument("SUMMARIES")
+
+    ###*
+    * Loads system resources such as graphics, sounds, fonts, etc.
+    *
+    * @method loadSystemResources
+    ###
+    loadSystemResources: ->
+        ResourceManager.loadFonts()
+        ResourceLoader.loadSystemSounds(RecordManager.system)
+        ResourceLoader.loadSystemGraphics(RecordManager.system)
+
+        for language in LanguageManager.languages
+            if language.icon?.name?.length > 0
+                ResourceManager.getBitmap(ResourceManager.getPath(language.icon))
+
+        gs.Fonts.initialize()
+
+    ###*
+    * Gets game settings.
+    *
+    * @method getSettings
+    ###
+    getSettings: ->
+        settings = GameStorage.getObject("settings")
+
+        if not settings? or settings.version != 342
+            GameManager.resetSettings()
+            settings = GameManager.settings
+            @firstStartup = true
+
+        return settings
+
+    ###*
+    * Sets up the game's global data. If it is outdated, this method will
+    * reset the global game data.
+    *
+    * @method setupGlobalData
+    ###
+    setupGlobalData: ->
+        globalData = GameStorage.getObject("globalData")
+        GameManager.globalData = globalData
+
+        if !globalData || globalData.version != 342
+            GameManager.resetGlobalData()
+
+    ###*
+    * Sets up game settings.
+    *
+    * @method setupGameSettings
+    * @param {Object} settings - Current game settings.
+    ###
+    setupGameSettings: (settings) ->
+        GameManager.settings = settings
+        #GameManager.settings.fullScreen = Graphics.isFullscreen()
+
+        for character, i in RecordManager.charactersArray
+            if character and !GameManager.settings.voicesByCharacter[character.index]
+                GameManager.settings.voicesByCharacter[character.index] = 100
+        for cg, i in RecordManager.cgGalleryArray
+            if cg? and !GameManager.globalData.cgGallery[cg.index]
+                GameManager.globalData.cgGallery[cg.index] = { unlocked: no }
+
+    ###*
+    * Sets up audio settings.
+    *
+    * @method setupAudioSettings
+    * @param {Object} settings - Current game settings.
+    ###
+    setupAudioSettings: (settings) ->
+        AudioManager.generalSoundVolume = settings.seVolume
+        AudioManager.generalMusicVolume = settings.bgmVolume
+        AudioManager.generalVoiceVolume = settings.voiceVolume
+
+    ###*
+    * Sets up video settings.
+    *
+    * @method setupVideoSettings
+    * @param {Object} settings - Current game settings.
+    ###
+    setupVideoSettings: (settings) ->
+        settings.renderer = 1
+        Graphics.keepRatio = !settings.adjustAspectRatio
+        Graphics.onResize()
+        unless @firstStartup
+            if settings.fullScreen
+                Graphics.enterFullscreen()
+            else
+                Graphics.leaveFullscreen()
+        if gs.Platform.isElectron
+            electron = require("electron")
+            electron.ipcRenderer.on "fullscreen-entered", ->
+                GameManager.settings.fullScreen = true
+            electron.ipcRenderer.on "fullscreen-left", ->
+                GameManager.settings.fullScreen = false
+
+    ###*
+    * Sets up settings.
+    *
+    * @method setupSettings
+    ###
+    setupSettings: ->
+        settings = @getSettings()
+
+        @setupGlobalData()
+        @setupGameSettings(settings)
+        @setupAudioSettings(settings)
+        @setupVideoSettings(settings)
+
+
+        GameStorage.setObject("settings", settings)
+
+    ###*
+    * Loads all system resources needed to start the actual game.
+    *
+    * @method load
+    * @param {Function} callback - Called when all system resources are loaded.
+    ###
+    load: (callback) ->
+        @loadSystemData()
+
+        DataManager.events.on "loaded", =>
+            GameManager.tempFields = new gs.GameTemp()
+            window.$tempFields = GameManager.tempFields
+
+            if @languagesLoaded
+                RecordManager.initialize()
+                LanguageManager.initialize()
+                SceneManager.initialize()
+                @setupSettings()
+            else
+                @loadData()
+
+            if @languagesLoaded
+                @loadSystemResources()
+                DataManager.events.off "loaded"
+                ResourceManager.events.on "loaded", =>
+                    GameManager.setupCursor()
+                    ResourceManager.events.off "loaded"
+                    ui.UIManager.setup()
+                    callback()
+
+            @languagesLoaded = yes
+
+
+    ###*
+    * Sets up the application.
+    *
+    * @method setupApplication
+    ###
+    setupApplication: ->
+        $PARAMS.showDebugInfo = no
+        window.ResourceManager = new window.ResourceManager()
+        window.DataManager = new window.DataManager()
+
+        # Force OpenGL renderer
+        window.Graphics = new Graphics_OpenGL()
+        window.gs.Graphics = window.Graphics
+        window.Renderer = window.Renderer_OpenGL
+
+        # Force linear filtering
+        Texture2D.filter = 1
+
+    ###*
+    * Initializes the input system to enable support for keyboard, mouse, touch, etc.
+    *
+    * @method setupInput
+    ###
+    setupInput: ->
+        Input.initialize()
+        Input.Mouse.initialize()
+
+    ###*
+    * Initializes the video system with the game's resolution. It is necessary to
+    * call this method before using graphic object such as bitmaps, sprites, etc.
+    *
+    * @method setupVideo
+    ###
+    setupVideo: ->
+        @frameCallback = @createFrameCallback()
+
+        Graphics.initialize($PARAMS.resolution.width, $PARAMS.resolution.height)
+        #Graphics.onFocusReceive = => GameManager.tempSettings.skip = no
+        Graphics.onDispose = => ResourceManager.dispose()
+        Graphics.formats = [320, 384, 427]
+        Graphics.scale = 0.5 / 240 * Graphics.height
+        Font.defaultSize = Math.round(9 / 240 * Graphics.height)
+
+        Graphics.onEachFrame(@frameCallback)
+
+    ###*
+    * Registers shader-based effects. It is important to register all effects
+    * before the graphics system is initialized.
+    *
+    * @method setupEffects
+    ###
+    setupEffects: ->
+        # Register built-in LOD/Box Blur effect
+        gs.Effect.registerEffect(gs.Effect.fragmentShaderInfos.lod_blur)
+        # Register built-in pixelate effect
+        gs.Effect.registerEffect(gs.Effect.fragmentShaderInfos.pixelate)
+
+        # This is an example of how to register your own shader-effect.
+        # See Effects > CircularDistortionEffect script for more info.
+        # gs.CircularDistortionEffect.register()
+    ###*
+    * Initializes the Live2D. If Live2D is not available, it does nothing. Needs to be
+    * called before using Live2D.
+    *
+    * @method setupLive2D
+    ###
+    setupLive2D: ->
+        if window.live2dframework
+            cubismOption = new Option()
+            cubismOption.logFunction = (msg) -> console.log(msg)
+            cubismOption.loggingLevel = live2dframework.cubismdebug.LogLevel_Verbose
+            live2dframework.framework.CubismFramework.startUp(cubismOption)
+            live2dframework.framework.CubismFramework.initialize()
+        if window.Live2D
+            Live2D.init()
+            Live2D.setGL($gl)
+            Live2DFramework.setPlatformManager(new L2DPlatformManager())
+
+    ###*
+    * Creates the frame-callback function called once per frame to update and render
+    * the game.
+    *
+    * @method setupLive2D
+    * @return {Function} The frame-callback function.
+    ###
+    createFrameCallback: ->
+        callback = null
+
+        if $PARAMS.preview? or ($PARAMS.testOffline && window.parent != window)
+            callback = (time) =>
+                try
+                    if $PARAMS.preview && !$PARAMS.preview.error
+                        @updateFrame()
+                catch ex
+                    if $PARAMS.preview or GameManager.inLivePreview
+                        $PARAMS.preview = error: ex
+                    console.log(ex)
+        else
+            callback = (time) => @updateFrame()
+
+        return callback
+
+    ###*
+    * Creates the start scene object. If an intro-scene is set, this method returns the
+    * intro-scene. If the game runs in Live-Preview, this method returns the selected
+    * scene in editor.
+    *
+    * @method createStartScene
+    * @return {gs.Object_Base} The start-scene.
+    ###
+    createStartScene: ->
+        scene = null
+        introScene = null
+
+        if RecordManager.system.useIntroScene
+            introScene = DataManager.getDocumentSummary(RecordManager.system.introInfo?.scene?.uid)
+
+        if $PARAMS.preview or introScene
+            scene = new vn.Object_Scene()
+            scene.sceneData.uid = $PARAMS.preview?.scene.uid || RecordManager.system.introInfo?.scene?.uid
+            scene.events.on "dispose", (e) -> GameManager.sceneData.uid = null
+        else if LanguageManager.languages.length > 1
+            scene = new gs.Object_Layout("languageMenuLayout")
+        else
+            scene = new gs.Object_Layout("titleLayout")
+
+        return scene
+
+    ###*
+    * Boots the game by setting up the application window as well as the video, audio and input system.
+    *
+    * @method start
+    ###
+    start: ->
+        @setupApplication()
+        @setupEffects()
+        @setupVideo()
+        @setupLive2D()
+        @setupInput()
+    
+        @load => SceneManager.switchTo(@createStartScene())
+
+
+# The entry point of the game.
+gs.Main = new Main()
+gs.Application.initialize()
+gs.Application.onReady = ->
+    # Add meta data to all class objects necessary for object serialization.
+    Object.keys(gs).forEach (k) -> gs[k].$namespace = "gs"; gs[k].$name = k
+    Object.keys(vn).forEach (k) -> vn[k].$namespace = "vn"; vn[k].$name = k
+    Object.keys(ui).forEach (k) -> ui[k].$namespace = "ui"; ui[k].$name = k
+    
+    gs.Main.start()
+    
+
+
+
+
+
